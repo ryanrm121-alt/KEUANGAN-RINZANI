@@ -1,0 +1,505 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { 
+  Home, Wallet, PieChart, Settings, Plus, X, 
+  LogOut, TrendingUp, TrendingDown, ShieldCheck, 
+  CreditCard, Tags, Trash2, Mail, Lock, User as UserIcon
+} from 'lucide-react';
+import { initializeApp } from 'firebase/app';
+import { 
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, 
+  signInAnonymously, signInWithCustomToken, onAuthStateChanged, signOut 
+} from 'firebase/auth';
+import { 
+  getFirestore, collection, onSnapshot, addDoc, deleteDoc, doc 
+} from 'firebase/firestore';
+
+// Konfigurasi Firebase dari Environment
+const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+const appId = typeof __app_id !== 'undefined' ? __app_id : 'rynzani-family-app';
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Utilitas Format Rupiah & Tanggal
+const formatRp = (angka) => {
+  return new Intl.NumberFormat('id-ID', {
+    style: 'currency', currency: 'IDR', minimumFractionDigits: 0
+  }).format(angka || 0);
+};
+
+const formatDate = (timestamp) => {
+  if (!timestamp) return '-';
+  const d = new Date(timestamp);
+  return new Intl.DateTimeFormat('id-ID', { day: '2-digit', month: 'short', year: 'numeric' }).format(d);
+};
+
+const AuthScreen = () => {
+  const [isLogin, setIsLogin] = useState(true);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      if (isLogin) {
+        await signInWithEmailAndPassword(auth, email, password);
+      } else {
+        await createUserWithEmailAndPassword(auth, email, password);
+      }
+    } catch (err) {
+      setError(err.message.includes('auth/') ? 'Email atau password tidak valid.' : err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGuestLogin = async () => {
+    setError('');
+    setLoading(true);
+    try {
+      await signInAnonymously(auth);
+    } catch (err) {
+      setError('Gagal masuk sebagai tamu.');
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-blue-50 flex flex-col justify-center items-center p-4">
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-8 border border-blue-100">
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg shadow-blue-200">
+            <ShieldCheck size={32} />
+          </div>
+          <h1 className="text-2xl font-bold text-gray-900">Keuangan Rynzani</h1>
+          <p className="text-sm text-gray-500 mt-1">Sistem Manajemen Keuangan Keluarga</p>
+        </div>
+
+        {error && <div className="mb-4 p-3 bg-red-50 text-red-600 text-sm rounded-xl border border-red-100 text-center">{error}</div>}
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+            <div className="relative">
+              <Mail className="absolute left-3 top-3 text-gray-400" size={18} />
+              <input type="email" required value={email} onChange={e=>setEmail(e.target.value)} className="w-full pl-10 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="keluarga@email.com" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Password</label>
+            <div className="relative">
+              <Lock className="absolute left-3 top-3 text-gray-400" size={18} />
+              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)} className="w-full pl-10 p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="••••••••" />
+            </div>
+          </div>
+          <button type="submit" disabled={loading} className="w-full bg-blue-600 text-white font-bold py-3 rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-md shadow-blue-200 disabled:opacity-70">
+            {loading ? 'Memproses...' : (isLogin ? 'Masuk' : 'Daftar Akun Keluarga')}
+          </button>
+        </form>
+
+        <div className="mt-6 text-center">
+          <button onClick={() => setIsLogin(!isLogin)} className="text-sm text-blue-600 hover:underline font-medium">
+            {isLogin ? 'Belum punya akun? Daftar di sini' : 'Sudah punya akun? Masuk'}
+          </button>
+        </div>
+        
+        <div className="mt-6 pt-6 border-t border-gray-100 text-center">
+          <button onClick={handleGuestLogin} disabled={loading} className="text-sm text-gray-500 hover:text-gray-800 font-medium">
+            Atau masuk cepat sebagai Tamu (Anonymous)
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const TransactionModal = ({ isOpen, onClose, user, categories }) => {
+  const [type, setType] = useState('EXPENSE');
+  const [amount, setAmount] = useState('');
+  const [category, setCategory] = useState('');
+  const [description, setDescription] = useState('');
+  const [loading, setLoading] = useState(false);
+  
+  // State untuk buat kategori inline
+  const [newCatName, setNewCatName] = useState('');
+  const [isCreatingCat, setIsCreatingCat] = useState(false);
+
+  if (!isOpen) return null;
+
+  const availableCats = categories.filter(c => c.type === type);
+
+  const handleCreateCategory = async () => {
+    if (!newCatName.trim()) return;
+    setIsCreatingCat(true);
+    try {
+      const catRef = collection(db, 'artifacts', appId, 'users', user.uid, 'categories');
+      await addDoc(catRef, { name: newCatName.trim(), type, createdAt: Date.now() });
+      setCategory(newCatName.trim());
+      setNewCatName('');
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsCreatingCat(false);
+    }
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!category) return; // Wajib pilih/buat kategori
+    setLoading(true);
+    try {
+      const txRef = collection(db, 'artifacts', appId, 'users', user.uid, 'transactions');
+      await addDoc(txRef, {
+        type,
+        amount: Number(amount),
+        categoryName: category,
+        description: description.trim(),
+        date: Date.now(),
+        createdAt: Date.now(),
+        uid: user.uid
+      });
+      // Reset & Close
+      setAmount(''); setCategory(''); setDescription(''); setType('EXPENSE');
+      onClose();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 z-50 flex flex-col justify-end md:justify-center items-center md:p-4 backdrop-blur-sm animate-in fade-in">
+      <div className="bg-white rounded-t-3xl md:rounded-3xl w-full max-w-md shadow-2xl flex flex-col max-h-[90vh] animate-in slide-in-from-bottom-10 md:slide-in-from-bottom-0">
+        <div className="p-5 flex justify-between items-center border-b border-gray-100">
+          <h2 className="text-lg font-bold text-gray-900">Catat Transaksi</h2>
+          <button onClick={onClose} className="p-2 bg-gray-100 rounded-full text-gray-600 hover:bg-gray-200"><X size={18} /></button>
+        </div>
+        
+        <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-5">
+          <div className="flex bg-gray-100 p-1.5 rounded-xl">
+            <button type="button" onClick={() => { setType('EXPENSE'); setCategory(''); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${type === 'EXPENSE' ? 'bg-white shadow text-red-600' : 'text-gray-500'}`}>Pengeluaran</button>
+            <button type="button" onClick={() => { setType('INCOME'); setCategory(''); }} className={`flex-1 py-2 text-sm font-bold rounded-lg transition-all ${type === 'INCOME' ? 'bg-white shadow text-green-600' : 'text-gray-500'}`}>Pemasukan</button>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Nominal (Rp)</label>
+            <input type="number" required min="1" value={amount} onChange={(e) => setAmount(e.target.value)} className="w-full p-4 bg-gray-50 border border-gray-200 rounded-xl text-2xl font-bold text-gray-900 focus:ring-2 focus:ring-blue-500 focus:outline-none" placeholder="0" />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Kategori</label>
+            {availableCats.length > 0 ? (
+              <select required value={category} onChange={e=>setCategory(e.target.value)} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none">
+                <option value="">Pilih Kategori...</option>
+                {availableCats.map(c => <option key={c.id} value={c.name}>{c.name}</option>)}
+              </select>
+            ) : (
+              <div className="bg-blue-50 p-4 rounded-xl border border-blue-100">
+                <p className="text-sm text-blue-800 mb-3 font-medium">Belum ada kategori {type === 'INCOME' ? 'Pemasukan' : 'Pengeluaran'}. Buat kategori pertama Anda:</p>
+                <div className="flex gap-2">
+                  <input type="text" placeholder="Cth: Gaji, Makanan" value={newCatName} onChange={e=>setNewCatName(e.target.value)} className="flex-1 p-2 bg-white border border-blue-200 rounded-lg text-sm outline-none focus:border-blue-500" />
+                  <button type="button" onClick={handleCreateCategory} disabled={isCreatingCat} className="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-sm active:scale-95">Buat</button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Catatan (Opsional)</label>
+            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none" placeholder="Contoh: Beli makan siang" />
+          </div>
+
+          <button type="submit" disabled={loading || !category} className="w-full bg-blue-600 text-white font-bold py-4 rounded-xl hover:bg-blue-700 active:scale-95 transition-all shadow-lg shadow-blue-200 disabled:opacity-50 mt-4">
+            {loading ? 'Menyimpan...' : 'Simpan Transaksi'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+const MainApp = ({ user, auth, db, appId }) => {
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [transactions, setTransactions] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  // Fetch Kategori & Transaksi Real-time
+  useEffect(() => {
+    if (!user) return;
+    
+    // Fetch Kategori (Tanpa complex query)
+    const catRef = collection(db, 'artifacts', appId, 'users', user.uid, 'categories');
+    const unsubCat = onSnapshot(catRef, (snap) => {
+      const data = [];
+      snap.forEach(doc => data.push({ id: doc.id, ...doc.data() }));
+      setCategories(data);
+    }, (err) => console.error(err));
+
+    // Fetch Transaksi
+    const txRef = collection(db, 'artifacts', appId, 'users', user.uid, 'transactions');
+    const unsubTx = onSnapshot(txRef, (snap) => {
+      const data = [];
+      snap.forEach(doc => data.push({ id: doc.id, ...doc.data() }));
+      // Sorting secara manual di memori (Sesuai Rule 2)
+      data.sort((a, b) => b.createdAt - a.createdAt);
+      setTransactions(data);
+    }, (err) => console.error(err));
+
+    return () => { unsubCat(); unsubTx(); };
+  }, [user, db, appId]);
+
+  // Kalkulasi Dashboard
+  const calc = useMemo(() => {
+    let income = 0; let expense = 0;
+    transactions.forEach(t => {
+      if (t.type === 'INCOME') income += t.amount;
+      else expense += t.amount;
+    });
+    const saldo = income - expense;
+    const ratio = income > 0 ? Math.min(((expense / income) * 100), 100).toFixed(1) : 0;
+    return { income, expense, saldo, ratio };
+  }, [transactions]);
+
+  const handleDeleteTx = async (id) => {
+    try { await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'transactions', id)); } 
+    catch (e) { console.error(e); }
+  };
+
+  const handleLogout = () => signOut(auth);
+
+  return (
+    <div className="flex h-screen bg-gray-50 text-gray-900 font-sans overflow-hidden">
+      
+      {/* SIDEBAR (Desktop) */}
+      <aside className="hidden md:flex flex-col w-64 bg-white border-r border-gray-200">
+        <div className="p-6">
+          <h1 className="text-xl font-black text-blue-900">Keuangan Rynzani</h1>
+          <p className="text-xs text-gray-500 font-medium uppercase tracking-widest mt-1">Workspace</p>
+        </div>
+        <nav className="flex-1 px-4 space-y-2 mt-4">
+          <button onClick={()=>setActiveTab('dashboard')} className={`w-full flex items-center gap-3 p-3 rounded-xl font-medium transition-all ${activeTab==='dashboard' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50'}`}>
+            <Home size={20} /> Dashboard
+          </button>
+          <button onClick={()=>setActiveTab('categories')} className={`w-full flex items-center gap-3 p-3 rounded-xl font-medium transition-all ${activeTab==='categories' ? 'bg-blue-50 text-blue-700' : 'text-gray-500 hover:bg-gray-50'}`}>
+            <Tags size={20} /> Kategori Kustom
+          </button>
+        </nav>
+        <div className="p-4 border-t border-gray-100">
+          <div className="flex items-center gap-3 p-2 mb-4 bg-gray-50 rounded-lg border border-gray-100">
+            <UserIcon size={16} className="text-gray-500" />
+            <p className="text-xs text-gray-600 font-medium truncate">{user.email || 'Akun Tamu'}</p>
+          </div>
+          <button onClick={handleLogout} className="flex items-center gap-3 p-3 w-full text-red-500 hover:bg-red-50 rounded-xl transition text-left font-bold">
+            <LogOut size={20} /> Keluar Sistem
+          </button>
+        </div>
+      </aside>
+
+      {/* MAIN CONTENT */}
+      <main className="flex-1 overflow-y-auto pb-24 md:pb-6 relative">
+        <div className="p-4 md:p-8 max-w-5xl mx-auto space-y-6">
+          
+          {activeTab === 'dashboard' && (
+            <>
+              {/* Header */}
+              <div className="flex justify-between items-end bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                <div>
+                  <p className="text-sm font-semibold text-gray-500 mb-1">Halo,</p>
+                  <h2 className="text-2xl md:text-3xl font-black text-gray-900 tracking-tight">Kondisi Keuangan</h2>
+                </div>
+                <div className="hidden md:block">
+                  <button onClick={() => setIsModalOpen(true)} className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-xl shadow-md font-bold flex items-center gap-2 active:scale-95 transition-all">
+                    <Plus size={18} /> Catat
+                  </button>
+                </div>
+              </div>
+
+              {/* Statistik Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div className="bg-gradient-to-br from-blue-700 to-blue-900 p-6 rounded-3xl shadow-lg text-white relative overflow-hidden">
+                  <ShieldCheck className="absolute right-[-20px] bottom-[-20px] opacity-10 text-white" size={120} />
+                  <p className="text-sm font-semibold text-blue-200 mb-2 relative z-10">Total Saldo</p>
+                  <h3 className="text-3xl font-black relative z-10">{formatRp(calc.saldo)}</h3>
+                </div>
+
+                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="p-1.5 bg-green-100 rounded-lg text-green-600"><TrendingUp size={16} /></div>
+                    <p className="text-sm font-bold text-gray-500">Pemasukan</p>
+                  </div>
+                  <h3 className="text-2xl font-bold text-gray-900">{formatRp(calc.income)}</h3>
+                </div>
+
+                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className="p-1.5 bg-red-100 rounded-lg text-red-600"><TrendingDown size={16} /></div>
+                    <p className="text-sm font-bold text-gray-500">Pengeluaran</p>
+                  </div>
+                  <h3 className="text-2xl font-bold text-gray-900">{formatRp(calc.expense)}</h3>
+                </div>
+
+                <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
+                  <p className="text-sm font-bold text-gray-500 mb-2">Expense Ratio</p>
+                  <h3 className="text-2xl font-bold text-gray-900">{calc.ratio}%</h3>
+                  <div className="mt-3 relative w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                    <div className={`absolute top-0 left-0 h-full rounded-full ${calc.ratio > 80 ? 'bg-red-500' : 'bg-blue-500'}`} style={{ width: `${calc.ratio}%` }}></div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Transaksi Terbaru */}
+              <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden mt-6">
+                <div className="p-6 border-b border-gray-50 flex justify-between items-center">
+                  <h3 className="text-lg font-bold text-gray-900">Histori Transaksi</h3>
+                  <div className="flex items-center gap-2 text-xs font-bold bg-green-100 text-green-700 px-3 py-1.5 rounded-full">
+                    <span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span> tersinkron
+                  </div>
+                </div>
+                
+                <div className="divide-y divide-gray-50">
+                  {transactions.length === 0 ? (
+                    <div className="p-10 text-center text-gray-400">
+                      <Wallet size={48} className="mx-auto mb-3 opacity-20" />
+                      <p className="font-bold">Belum ada transaksi bulan ini.</p>
+                      <p className="text-sm mt-1">Gunakan tombol + untuk mencatat.</p>
+                    </div>
+                  ) : (
+                    transactions.map((tx) => (
+                      <div key={tx.id} className="p-5 hover:bg-gray-50 transition-colors flex justify-between items-center group">
+                        <div className="flex items-center gap-4">
+                          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center font-bold ${
+                            tx.type === 'INCOME' ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'
+                          }`}>
+                            {tx.type === 'INCOME' ? '+' : '-'}
+                          </div>
+                          <div>
+                            <p className="font-bold text-gray-900">{tx.categoryName}</p>
+                            <p className="text-xs text-gray-500 mt-0.5 font-medium">{formatDate(tx.date)} {tx.description && `• ${tx.description}`}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-4">
+                          <p className={`font-black whitespace-nowrap ${tx.type === 'INCOME' ? 'text-green-600' : 'text-gray-900'}`}>
+                            {formatRp(tx.amount)}
+                          </p>
+                          <button onClick={() => handleDeleteTx(tx.id)} className="p-2 text-gray-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all" title="Hapus">
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
+          {activeTab === 'categories' && (
+            <div className="bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden">
+              <div className="p-6 border-b border-gray-50">
+                <h3 className="text-lg font-bold text-gray-900">Manajemen Kategori</h3>
+                <p className="text-sm text-gray-500 mt-1">Semua kategori didefinisikan sendiri oleh Anda.</p>
+              </div>
+              <div className="p-6">
+                 {categories.length === 0 ? (
+                    <div className="p-8 text-center bg-blue-50 rounded-2xl border border-blue-100 text-blue-800 font-medium">
+                      Anda belum membuat kategori apapun. Kategori dapat dibuat langsung saat Anda menambahkan Transaksi.
+                    </div>
+                 ) : (
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                     {categories.map(c => (
+                       <div key={c.id} className="flex justify-between items-center p-4 border border-gray-100 rounded-2xl shadow-sm">
+                         <div className="flex items-center gap-3">
+                           <div className={`w-3 h-3 rounded-full ${c.type === 'INCOME' ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                           <p className="font-bold text-gray-800">{c.name}</p>
+                         </div>
+                         <button onClick={async () => await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'categories', c.id))} className="text-gray-400 hover:text-red-500">
+                           <Trash2 size={18} />
+                         </button>
+                       </div>
+                     ))}
+                   </div>
+                 )}
+              </div>
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* BOTTOM NAV (Mobile) */}
+      <nav className="md:hidden fixed bottom-0 w-full bg-white border-t border-gray-200 flex justify-around items-center h-16 px-2 z-40 pb-safe shadow-[0_-4px_20px_rgba(0,0,0,0.05)]">
+        <button onClick={()=>setActiveTab('dashboard')} className={`flex flex-col items-center p-2 w-16 ${activeTab==='dashboard'?'text-blue-600':'text-gray-400'}`}>
+          <Home size={22} />
+          <span className="text-[10px] mt-1 font-bold">Home</span>
+        </button>
+        <button onClick={()=>setActiveTab('categories')} className={`flex flex-col items-center p-2 w-16 ${activeTab==='categories'?'text-blue-600':'text-gray-400'}`}>
+          <Tags size={22} />
+          <span className="text-[10px] mt-1 font-bold">Kategori</span>
+        </button>
+        
+        {/* FAB Transaksi Cepat */}
+        <div className="relative -top-6">
+          <button onClick={() => setIsModalOpen(true)} className="bg-blue-600 text-white w-14 h-14 rounded-full shadow-lg shadow-blue-300 flex items-center justify-center active:scale-90 transition-transform ring-4 ring-white">
+            <Plus size={28} strokeWidth={3} />
+          </button>
+        </div>
+
+        <div className="w-16"></div> {/* Spacer for symmetry */}
+        
+        <button onClick={handleLogout} className="flex flex-col items-center text-gray-400 hover:text-red-500 p-2 w-16">
+          <LogOut size={22} />
+          <span className="text-[10px] mt-1 font-bold">Keluar</span>
+        </button>
+      </nav>
+
+      {/* Modal */}
+      <TransactionModal isOpen={isModalOpen} onClose={() => setIsModalOpen(false)} user={user} categories={categories} />
+    </div>
+  );
+};
+
+export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // Mengecek apakah terdapat token login otomatis dari sistem lingkungan
+    const initEnvAuth = async () => {
+      try {
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          await signInWithCustomToken(auth, __initial_auth_token);
+        }
+      } catch (err) {
+        console.error("Token Auth Error:", err);
+      }
+    };
+    initEnvAuth();
+
+    // Listener Real-time status pengguna
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return () => unsub();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-blue-50">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  // Jika belum login, tampilkan layar Auth
+  if (!user) return <AuthScreen />;
+
+  // Jika sudah login, tampilkan App Utama
+  return <MainApp user={user} auth={auth} db={db} appId={appId} />;
+}
